@@ -30,10 +30,12 @@ export type ParticleField = {
 
 const ATTRACT_RADIUS = 140
 const ATTRACT_STRENGTH = 0.085
-const FORM_HOLD_MS = 1300
-const FORM_EASE = 0.12
+const FORM_HOLD_MS = 1400
+const FORM_EASE = 0.28
 const DRIFT_RETURN = 0.018
 const DAMPING = 0.92
+
+type Pt = { x: number; y: number }
 
 function particleCountForSize(width: number, height: number): number {
   const area = width * height
@@ -41,54 +43,108 @@ function particleCountForSize(width: number, height: number): number {
   return Math.max(800, Math.min(2000, raw))
 }
 
-function sampleMLHPoints(
-  width: number,
-  height: number,
-  count: number,
-): Array<{ x: number; y: number }> {
-  const canvas = document.createElement('canvas')
-  const scale = Math.min(width, height)
-  const fontSize = Math.max(72, Math.floor(scale * 0.28))
-  canvas.width = Math.max(1, Math.floor(width))
-  canvas.height = Math.max(1, Math.floor(height))
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })
-  if (!ctx) return []
-
-  ctx.fillStyle = '#000'
-  ctx.fillRect(0, 0, canvas.width, canvas.height)
-  ctx.fillStyle = '#fff'
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
-  ctx.font = `700 ${fontSize}px "Segoe UI", system-ui, sans-serif`
-  ctx.fillText('MLH', canvas.width / 2, canvas.height / 2)
-
-  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  const candidates: Array<{ x: number; y: number }> = []
-  const step = Math.max(2, Math.floor(fontSize / 36))
-
-  for (let y = 0; y < canvas.height; y += step) {
-    for (let x = 0; x < canvas.width; x += step) {
-      const i = (y * canvas.width + x) * 4
-      if (data[i]! > 180) {
-        candidates.push({ x, y })
-      }
+/** Sample points along a polyline with roughly even spacing. */
+function samplePolyline(points: Pt[], spacing: number): Pt[] {
+  const out: Pt[] = []
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i]!
+    const b = points[i + 1]!
+    const dx = b.x - a.x
+    const dy = b.y - a.y
+    const len = Math.hypot(dx, dy)
+    const steps = Math.max(1, Math.ceil(len / spacing))
+    for (let s = 0; s < steps; s++) {
+      const t = s / steps
+      out.push({ x: a.x + dx * t, y: a.y + dy * t })
     }
   }
+  if (points.length) out.push(points[points.length - 1]!)
+  return out
+}
 
-  if (candidates.length === 0) {
+/** Build MLH glyph outlines in local unit space, then scale into the viewport. */
+function sampleMLHPoints(width: number, height: number, count: number): Pt[] {
+  const unit = 100
+  // Glyphs designed in a ~320x100 box (3 letters with gaps)
+  const glyphs: Pt[][] = [
+    // M
+    [
+      { x: 0, y: 100 },
+      { x: 0, y: 0 },
+      { x: 35, y: 55 },
+      { x: 70, y: 0 },
+      { x: 70, y: 100 },
+    ],
+    // L
+    [
+      { x: 100, y: 0 },
+      { x: 100, y: 100 },
+      { x: 160, y: 100 },
+    ],
+    // H
+    [
+      { x: 190, y: 0 },
+      { x: 190, y: 100 },
+    ],
+    [
+      { x: 250, y: 0 },
+      { x: 250, y: 100 },
+    ],
+    [
+      { x: 190, y: 50 },
+      { x: 250, y: 50 },
+    ],
+  ]
+
+  const spacing = 3.2
+  const local: Pt[] = []
+  for (const poly of glyphs) {
+    local.push(...samplePolyline(poly, spacing))
+  }
+
+  // Thicken strokes with slight offsets so letters read clearly
+  const thickened: Pt[] = [...local]
+  for (const p of local) {
+    thickened.push({ x: p.x + 2.2, y: p.y })
+    thickened.push({ x: p.x - 2.2, y: p.y })
+    thickened.push({ x: p.x, y: p.y + 2.2 })
+    thickened.push({ x: p.x, y: p.y - 2.2 })
+  }
+
+  const boxW = 250
+  const boxH = unit
+  const scale = Math.min(width * 0.72, height * 0.42) / Math.max(boxW, boxH)
+  const drawW = boxW * scale
+  const drawH = boxH * scale
+  const ox = (width - drawW) / 2
+  const oy = (height - drawH) / 2
+
+  const world = thickened.map((p) => ({
+    x: ox + p.x * scale,
+    y: oy + p.y * scale,
+  }))
+
+  if (world.length === 0) {
     return Array.from({ length: count }, () => ({
       x: width * 0.5,
       y: height * 0.5,
     }))
   }
 
-  const points: Array<{ x: number; y: number }> = []
+  // Shuffle then cycle so particles cover the whole word
+  for (let i = world.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    const tmp = world[i]!
+    world[i] = world[j]!
+    world[j] = tmp
+  }
+
+  const points: Pt[] = []
   for (let i = 0; i < count; i++) {
-    const src = candidates[Math.floor((i / count) * candidates.length)]!
-    const jitter = step * 0.35
+    const src = world[i % world.length]!
     points.push({
-      x: src.x + (Math.random() - 0.5) * jitter,
-      y: src.y + (Math.random() - 0.5) * jitter,
+      x: src.x + (Math.random() - 0.5) * 1.5,
+      y: src.y + (Math.random() - 0.5) * 1.5,
     })
   }
   return points
@@ -169,6 +225,8 @@ export function createParticleField(): ParticleField {
         p.targetX = t.x
         p.targetY = t.y
         p.hasTarget = true
+        p.vx = 0
+        p.vy = 0
       }
       formUntil = performance.now() + FORM_HOLD_MS
     },
@@ -187,10 +245,8 @@ export function createParticleField(): ParticleField {
         if (p.hasTarget) {
           const dx = p.targetX - p.x
           const dy = p.targetY - p.y
-          p.vx += dx * FORM_EASE
-          p.vy += dy * FORM_EASE
-          p.vx *= 0.78
-          p.vy *= 0.78
+          p.vx = dx * FORM_EASE
+          p.vy = dy * FORM_EASE
         } else {
           const driftX =
             Math.sin(time * p.freq + p.phase) * p.amp +
@@ -222,10 +278,12 @@ export function createParticleField(): ParticleField {
         p.x += p.vx
         p.y += p.vy
 
-        if (p.x < -20) p.x = width + 20
-        else if (p.x > width + 20) p.x = -20
-        if (p.y < -20) p.y = height + 20
-        else if (p.y > height + 20) p.y = -20
+        if (!p.hasTarget) {
+          if (p.x < -20) p.x = width + 20
+          else if (p.x > width + 20) p.x = -20
+          if (p.y < -20) p.y = height + 20
+          else if (p.y > height + 20) p.y = -20
+        }
       }
     },
 
@@ -233,12 +291,17 @@ export function createParticleField(): ParticleField {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       ctx.clearRect(0, 0, width, height)
 
-      ctx.fillStyle = 'rgba(120, 170, 255, 0.55)'
+      const forming = performance.now() < formUntil
+      ctx.fillStyle = forming
+        ? 'rgba(210, 230, 255, 0.95)'
+        : 'rgba(120, 170, 255, 0.55)'
       for (const p of particles) {
-        const alpha = 0.35 + Math.min(0.55, (Math.abs(p.vx) + Math.abs(p.vy)) * 0.35)
+        const alpha = forming
+          ? 0.9
+          : 0.35 + Math.min(0.55, (Math.abs(p.vx) + Math.abs(p.vy)) * 0.35)
         ctx.globalAlpha = alpha
         ctx.beginPath()
-        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2)
+        ctx.arc(p.x, p.y, forming ? Math.max(1.4, p.size) : p.size, 0, Math.PI * 2)
         ctx.fill()
       }
       ctx.globalAlpha = 1
